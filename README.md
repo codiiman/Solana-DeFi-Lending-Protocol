@@ -297,7 +297,7 @@ Where:
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd Solana-DeFi-Lending-Protocol-1
+   cd Solana-DeFi-Lending-Protocol
    ```
 
 2. **Install Anchor**
