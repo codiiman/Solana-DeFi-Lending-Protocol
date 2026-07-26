@@ -39,7 +39,8 @@ pub struct Withdraw<'info> {
     /// Reserve vault (source of assets)
     #[account(
         mut,
-        constraint = reserve_vault.mint == market.asset_mint @ LendingError::InvalidMarketConfig
+        constraint = reserve_vault.mint == market.asset_mint @ LendingError::InvalidMarketConfig,
+        constraint = reserve_vault.key() == market.reserve_vault @ LendingError::InvalidReserveVault
     )]
     pub reserve_vault: Account<'info, TokenAccount>,
 

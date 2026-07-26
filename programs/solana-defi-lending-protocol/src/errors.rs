@@ -85,4 +85,19 @@ pub enum LendingError {
 
     #[msg("Liquidation threshold must be greater than LTV")]
     LiquidationThresholdTooLow,
+
+    #[msg("Invalid reserve vault - does not match market configuration")]
+    InvalidReserveVault,
+
+    #[msg("Insufficient user collateral for this borrow")]
+    InsufficientUserCollateral,
+
+    #[msg("User has no active borrow position in this market")]
+    NoActiveBorrowPosition,
+
+    #[msg("Repay amount exceeds user debt")]
+    RepayExceedsDebt,
+
+    #[msg("Only protocol authority can create markets")]
+    NotProtocolAuthority,
 }

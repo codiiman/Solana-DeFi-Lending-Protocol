@@ -41,14 +41,16 @@ pub struct Liquidate<'info> {
     /// Borrow market reserve vault (destination for repayment)
     #[account(
         mut,
-        constraint = borrow_reserve_vault.mint == borrow_market.asset_mint @ LendingError::InvalidMarketConfig
+        constraint = borrow_reserve_vault.mint == borrow_market.asset_mint @ LendingError::InvalidMarketConfig,
+        constraint = borrow_reserve_vault.key() == borrow_market.reserve_vault @ LendingError::InvalidReserveVault
     )]
     pub borrow_reserve_vault: Account<'info, TokenAccount>,
 
     /// Collateral market reserve vault (source of seized collateral)
     #[account(
         mut,
-        constraint = collateral_reserve_vault.mint == collateral_market.asset_mint @ LendingError::InvalidMarketConfig
+        constraint = collateral_reserve_vault.mint == collateral_market.asset_mint @ LendingError::InvalidMarketConfig,
+        constraint = collateral_reserve_vault.key() == collateral_market.reserve_vault @ LendingError::InvalidReserveVault
     )]
     pub collateral_reserve_vault: Account<'info, TokenAccount>,
 
