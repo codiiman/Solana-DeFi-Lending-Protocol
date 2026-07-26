@@ -15,7 +15,8 @@ pub struct CreateMarket<'info> {
 
     #[account(
         seeds = [b"global_config"],
-        bump
+        bump,
+        constraint = creator.key() == global_config.authority @ LendingError::NotProtocolAuthority
     )]
     pub global_config: Account<'info, GlobalConfig>,
 

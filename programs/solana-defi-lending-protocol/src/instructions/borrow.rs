@@ -25,7 +25,8 @@ pub struct Borrow<'info> {
     /// Reserve vault (source of borrowed assets)
     #[account(
         mut,
-        constraint = reserve_vault.mint == market.asset_mint @ LendingError::InvalidMarketConfig
+        constraint = reserve_vault.mint == market.asset_mint @ LendingError::InvalidMarketConfig,
+        constraint = reserve_vault.key() == market.reserve_vault @ LendingError::InvalidReserveVault
     )]
     pub reserve_vault: Account<'info, TokenAccount>,
 
@@ -37,10 +38,38 @@ pub struct Borrow<'info> {
     )]
     pub user_token_account: Account<'info, TokenAccount>,
 
-    /// CHECK: Oracle account for price feed
+    /// User's supply token account (collateral)
+    #[account(
+        constraint = user_supply_account.owner == user.key() @ LendingError::Unauthorized,
+        constraint = user_supply_account.mint == market.supply_mint @ LendingError::InvalidMarketConfig
+    )]
+    pub user_supply_account: Account<'info, TokenAccount>,
+
+    /// Supply mint (for exchange rate calculation)
+    #[account(
+        constraint = supply_mint.key() == market.supply_mint @ LendingError::InvalidMarketConfig
+    )]
+    pub supply_mint: Account<'info, Mint>,
+
+    /// User's borrow position PDA (initialized if first borrow)
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = BorrowPosition::SIZE,
+        seeds = [b"borrow_position", market.key().as_ref(), user.key().as_ref()],
+        bump
+    )]
+    pub borrow_position: Account<'info, BorrowPosition>,
+
+    /// CHECK: Oracle account for price feed — validated against market.oracle
+    #[account(
+        constraint = oracle.key() == market.oracle @ LendingError::InvalidOracle
+    )]
     pub oracle: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 pub fn handler(ctx: Context<Borrow>, amount: u64) -> Result<()> {
@@ -59,17 +88,49 @@ pub fn handler(ctx: Context<Borrow>, amount: u64) -> Result<()> {
         LendingError::InsufficientLiquidity
     );
 
-    // TODO: In a full implementation, calculate user's total collateral across all markets
-    // and total borrowed value to check health factor
-    // For now, we do a simplified check on this market only
+    // Calculate user's collateral value in terms of the underlying asset
+    let exchange_rate = if market.total_supply_tokens == 0 {
+        INTEREST_SCALE
+    } else {
+        calculate_exchange_rate(market.total_supplied, market.total_supply_tokens)?
+    };
 
-    // Calculate new total borrowed
-    let new_total_borrowed = market.total_borrowed
+    let user_collateral = (ctx.accounts.user_supply_account.amount as u128)
+        .checked_mul(exchange_rate)
+        .ok_or(LendingError::MathOverflow)?
+        .checked_div(INTEREST_SCALE)
+        .ok_or(LendingError::MathOverflow)? as u64;
+
+    // Calculate current debt (if any existing position)
+    let current_debt = if ctx.accounts.borrow_position.borrowed_amount > 0 {
+        ctx.accounts.borrow_position.calculate_debt(market)?
+    } else {
+        0
+    };
+
+    // Check collateral: new borrow + existing debt must not exceed LTV * collateral
+    let new_total_debt = current_debt
+        .checked_add(amount)
+        .ok_or(LendingError::MathOverflow)?;
+
+    let max_borrow = (user_collateral as u128)
+        .checked_mul(market.ltv_bps as u128)
+        .ok_or(LendingError::MathOverflow)?
+        .checked_div(10000)
+        .ok_or(LendingError::MathOverflow)? as u64;
+
+    require!(
+        new_total_debt <= max_borrow,
+        LendingError::InsufficientCollateral
+    );
+
+    // Calculate new total borrowed for market
+    let new_market_total_borrowed = market.total_borrowed
         .checked_add(amount)
         .ok_or(LendingError::MathOverflow)?;
 
     // Check utilization doesn't exceed 100%
-    let utilization_bps = calculate_utilization_rate(new_total_borrowed, market.total_supplied)?;
+    let utilization_bps = calculate_utilization_rate(new_market_total_borrowed, market.total_supplied)?;
     require!(
         utilization_bps <= 10000,
         LendingError::InvalidUtilizationRate
@@ -95,12 +156,24 @@ pub fn handler(ctx: Context<Borrow>, amount: u64) -> Result<()> {
     token::transfer(transfer_ctx, amount)?;
 
     // Update market state
-    market.total_borrowed = new_total_borrowed;
+    market.total_borrowed = new_market_total_borrowed;
 
-    // Create or update borrow position
-    // Note: In a full implementation, you'd use a PDA for the borrow position
-    // For simplicity, we're updating the market's total_borrowed
-    // A real implementation would track individual positions
+    // Initialize or update borrow position
+    let position = &mut ctx.accounts.borrow_position;
+    if position.borrowed_amount == 0 {
+        position.initialize(
+            ctx.accounts.user.key(),
+            market.key(),
+            amount,
+            market.cumulative_borrow_rate,
+            &clock,
+        );
+    } else {
+        // Update existing position with new cumulative rate and combined debt
+        position.borrowed_amount = new_total_debt;
+        position.cumulative_borrow_rate_snapshot = market.cumulative_borrow_rate;
+        position.last_updated = clock.unix_timestamp;
+    }
 
     emit!(Borrowed {
         market: market.key(),
